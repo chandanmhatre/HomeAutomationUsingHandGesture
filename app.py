@@ -41,6 +41,7 @@ def main():
     args = get_args()
 
     cap_device = args.device
+    print(cap_device)
     cap_width = args.width
     cap_height = args.height
 
