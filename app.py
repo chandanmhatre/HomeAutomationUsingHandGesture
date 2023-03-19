@@ -4,16 +4,18 @@ import argparse
 import itertools
 from collections import Counter
 from collections import deque
-
+import time
 import cv2 as cv
 import numpy as np
 import mediapipe as mp
-
 from utils import CvFpsCalc
 from model import KeyPointClassifier
 from model import PointHistoryClassifier
-
 import streamlit as st
+from datetime import datetime, timedelta
+
+
+isLoggingComplete = False
 
 
 def get_args():
@@ -36,12 +38,11 @@ def get_args():
     return args
 
 
-def main():
+def main(gestureNumber, loggingMode):
     # Argument parsing #################################################################
     args = get_args()
 
     cap_device = args.device
-    print(cap_device)
     cap_width = args.width
     cap_height = args.height
 
@@ -52,7 +53,7 @@ def main():
     use_brect = True
 
     # Camera preparation ###############################################################
-    cap = cv.VideoCapture(0)
+    cap = cv.VideoCapture(cap_device)
     cap.set(cv.CAP_PROP_FRAME_WIDTH, cap_width)
     cap.set(cv.CAP_PROP_FRAME_HEIGHT, cap_height)
 
@@ -96,14 +97,21 @@ def main():
 
     #  ########################################################################
     mode = 0
+    # present_time = datetime.now()
+    # present_time = present_time.strftime('%H:%M:%S')
+    global maxCount
+    updated_time = datetime.now() + timedelta(seconds=15)
+    updated_time = updated_time.strftime('%H:%M:%S')
+    maxCount = updated_time.split(':')[2]
     with st.empty():
-        while True:
+        while datetime.now().strftime('%H:%M:%S') != updated_time:
             fps = cvFpsCalc.get()
             # Process Key (ESC: end) #################################################
-            key = cv.waitKey(10)
-            if key == 27:  # ESC
-                break
-            number, mode = select_mode(key, mode)
+            # key = cv.waitKey(10)
+            # if key == 27:  # ESC
+            #     break
+            # select_mode(gestureNumber, loggingMode)
+            number, mode = gestureNumber, loggingMode
 
             # Camera capture #####################################################
             ret, image = cap.read()
@@ -127,7 +135,6 @@ def main():
                     # Landmark calculation
                     landmark_list = calc_landmark_list(
                         debug_image, hand_landmarks)
-
                     # Conversion to relative coordinates / normalized coordinates
                     pre_processed_landmark_list = pre_process_landmark(
                         landmark_list)
@@ -166,7 +173,7 @@ def main():
                         brect,
                         handedness,
                         keypoint_classifier_labels[hand_sign_id],
-                        point_history_classifier_labels[most_common_fg_id[0][0]],
+                        point_history_classifier_labels[most_common_fg_id[0][0]]
                     )
             else:
                 point_history.append([0, 0])
@@ -175,14 +182,16 @@ def main():
             debug_image = draw_info(debug_image, fps, mode, number)
             st.image(debug_image, use_column_width=True, channels='BGR')
             # cv.imshow('Hand Gesture Recognition', debug_image)
+        global isLoggingComplete
+        isLoggingComplete = True
         # cap.release()
         # cv.destroyAllWindows()
 
 
 def select_mode(key, mode):
     number = -1
-    if 48 <= key <= 57:  # 0 ~ 9
-        number = key - 48
+    if 0 <= key <= 9:  # 0 ~ 9
+        number = key
     if key == 110:  # n
         mode = 0
     if key == 107:  # k
@@ -493,7 +502,6 @@ def draw_info_text(image, brect, handedness, hand_sign_text,
                    finger_gesture_text):
     cv.rectangle(image, (brect[0], brect[1]), (brect[2], brect[1] - 22),
                  (0, 0, 0), -1)
-
     info_text = handedness.classification[0].label[0:]
     if hand_sign_text != "":
         info_text = info_text + ':' + hand_sign_text
@@ -518,11 +526,11 @@ def draw_point_history(image, point_history):
 
 
 def draw_info(image, fps, mode, number):
-    # cv.putText(image, "FPS:" + str(fps), (10, 30), cv.FONT_HERSHEY_SIMPLEX,
-    #            1.0, (0, 0, 0), 4, cv.LINE_AA)
+    rmeainingTime = str(int(maxCount)-int(datetime.now().strftime('%S')))
+    cv.putText(image, "Remaining Time : " + rmeainingTime, (10, 30), cv.FONT_HERSHEY_SIMPLEX,
+               1.0, (0, 0, 0), 4, cv.LINE_AA)
     # cv.putText(image, "FPS:" + str(fps), (10, 30), cv.FONT_HERSHEY_SIMPLEX,
     #            1.0, (255, 255, 255), 2, cv.LINE_AA)
-
     mode_string = ['Logging Key Point', 'Logging Point History']
     if 1 <= mode <= 2:
         cv.putText(image, "MODE:" + mode_string[mode - 1], (10, 90),
@@ -534,6 +542,18 @@ def draw_info(image, fps, mode, number):
                        cv.LINE_AA)
     return image
 
+
+def getGestureLabel():
+    with open('model/keypoint_classifier/keypoint_classifier_label.csv',
+              encoding='utf-8-sig') as f:
+        keypoint_classifier_labels = csv.reader(f)
+        keypoint_classifier_labels = [
+            row[0] for row in keypoint_classifier_labels
+        ]
+    return keypoint_classifier_labels
+
+
+state = st.session_state
 
 st.title('Home automation using hand gesture')
 
@@ -558,8 +578,19 @@ st.sidebar.subheader('Parameter')
 
 app_mode = st.sidebar.selectbox(
     'App Mode',
-    ['About', 'Set Gesture', 'Video']
+    ['Set Gesture', 'Video', "About"]
 )
+if "disabled" not in state:
+    state["disabled"] = False
+
+
+def disable():
+    state["disabled"] = True
+
+
+def reload():
+    state["disabled"] = False
+
 
 # Add Sidebar and Window style
 st.markdown(
@@ -579,14 +610,38 @@ st.markdown(
 
 # About Page
 if app_mode == 'About':
+    reload()
     st.markdown('''
                 ## ABOUT\n
                 In this application we are using **MediaPipe** for a hand gesture detection. **StreamLit** is used to create the Web Graphical User Interface (GUI) \n
     ''')
+    option = st.selectbox(
+        'Saved Gestures',
+        getGestureLabel())
+    st.write('You selected:', option)
+
 
 if app_mode == 'Set Gesture':
-    st.markdown('''
-                ## Set gesture \n
-                In this application we are using **MediaPipe** for a hand gesture detection. **StreamLit** is used to create the Web Graphical User Interface (GUI) \n
-    ''')
-    main()
+    isLoggingComplete = False
+    with st.form(key='Form1', clear_on_submit=False):
+        with st.sidebar:
+            user_word = st.sidebar.text_input("Enter Gesture Name",
+                                              disabled=state.disabled,
+                                              on_change=disable)
+    if user_word != "" and state["disabled"]:
+        with st.spinner('Wait for it...'):
+            time.sleep(15)
+        st.button('Cancel', on_click=reload, use_container_width=True)
+        main(len(getGestureLabel()), 1)
+    if isLoggingComplete:
+        csv_path = 'model/keypoint_classifier/keypoint_classifier_label.csv'
+        with open(csv_path, 'a', newline='', encoding='utf-8') as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow([user_word])
+        st.write('Done')
+
+
+# About Page
+if app_mode == 'Video':
+    with st.spinner('Wait for it...'):
+        time.sleep(1)
