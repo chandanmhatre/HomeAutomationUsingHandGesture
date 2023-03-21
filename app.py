@@ -1,3 +1,4 @@
+import tensorflow as tf
 import csv
 import copy
 import argparse
@@ -8,11 +9,15 @@ import time
 import cv2 as cv
 import numpy as np
 import mediapipe as mp
+from keypoint_classification import clearTfModel, run_keypoint_classification
 from utils import CvFpsCalc
 from model import KeyPointClassifier
 from model import PointHistoryClassifier
 import streamlit as st
 from datetime import datetime, timedelta
+from streamlit_modal import Modal
+import streamlit.components.v1 as components
+import h5py
 
 
 isLoggingComplete = False
@@ -22,170 +27,199 @@ def get_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--width", help='cap width', type=int, default=960)
-    parser.add_argument("--height", help='cap height', type=int, default=540)
+    parser.add_argument("--width", help="cap width", type=int, default=960)
+    parser.add_argument("--height", help="cap height", type=int, default=540)
 
-    parser.add_argument('--use_static_image_mode', action='store_true')
-    parser.add_argument("--min_detection_confidence",
-                        help='min_detection_confidence',
-                        type=float,
-                        default=0.7)
-    parser.add_argument("--min_tracking_confidence",
-                        help='min_tracking_confidence',
-                        type=int,
-                        default=0.5)
+    parser.add_argument("--use_static_image_mode", action="store_true")
+    parser.add_argument(
+        "--min_detection_confidence",
+        help="min_detection_confidence",
+        type=float,
+        default=0.7,
+    )
+    parser.add_argument(
+        "--min_tracking_confidence",
+        help="min_tracking_confidence",
+        type=int,
+        default=0.5,
+    )
     args = parser.parse_args()
     return args
 
 
-def main(gestureNumber, loggingMode):
-    # Argument parsing #################################################################
-    args = get_args()
+def main(gestureNumber, loggingMode, viewOnly):
+    with st.spinner(""):
+        # Argument parsing #################################################################
+        args = get_args()
 
-    cap_device = args.device
-    cap_width = args.width
-    cap_height = args.height
+        cap_device = args.device
+        cap_width = args.width
+        cap_height = args.height
 
-    use_static_image_mode = args.use_static_image_mode
-    min_detection_confidence = args.min_detection_confidence
-    min_tracking_confidence = args.min_tracking_confidence
+        use_static_image_mode = args.use_static_image_mode
+        min_detection_confidence = args.min_detection_confidence
+        min_tracking_confidence = args.min_tracking_confidence
 
-    use_brect = True
+        use_brect = True
 
-    # Camera preparation ###############################################################
-    cap = cv.VideoCapture(cap_device)
-    cap.set(cv.CAP_PROP_FRAME_WIDTH, cap_width)
-    cap.set(cv.CAP_PROP_FRAME_HEIGHT, cap_height)
+        # Camera preparation ###############################################################
+        cap = cv.VideoCapture(cap_device)
+        cap.set(cv.CAP_PROP_FRAME_WIDTH, cap_width)
+        cap.set(cv.CAP_PROP_FRAME_HEIGHT, cap_height)
 
-    # Model load #############################################################
-    mp_hands = mp.solutions.hands
-    hands = mp_hands.Hands(
-        static_image_mode=use_static_image_mode,
-        max_num_hands=1,
-        min_detection_confidence=min_detection_confidence,
-        min_tracking_confidence=min_tracking_confidence,
-    )
+        # Model load #############################################################
+        mp_hands = mp.solutions.hands
+        hands = mp_hands.Hands(
+            static_image_mode=use_static_image_mode,
+            max_num_hands=1,
+            min_detection_confidence=min_detection_confidence,
+            min_tracking_confidence=min_tracking_confidence,
+        )
 
-    keypoint_classifier = KeyPointClassifier()
+        keypoint_classifier = KeyPointClassifier()
 
-    point_history_classifier = PointHistoryClassifier()
+        point_history_classifier = PointHistoryClassifier()
 
-    # Read labels ###########################################################
-    with open('model/keypoint_classifier/keypoint_classifier_label.csv',
-              encoding='utf-8-sig') as f:
-        keypoint_classifier_labels = csv.reader(f)
-        keypoint_classifier_labels = [
-            row[0] for row in keypoint_classifier_labels
-        ]
-    with open(
-            'model/point_history_classifier/point_history_classifier_label.csv',
-            encoding='utf-8-sig') as f:
-        point_history_classifier_labels = csv.reader(f)
-        point_history_classifier_labels = [
-            row[0] for row in point_history_classifier_labels
-        ]
+        # Read labels ###########################################################
+        with open(
+            "model/keypoint_classifier/keypoint_classifier_label.csv",
+            encoding="utf-8-sig",
+        ) as f:
+            keypoint_classifier_labels = csv.reader(f)
+            keypoint_classifier_labels = [row[0]
+                                          for row in keypoint_classifier_labels]
+        with open(
+            "model/point_history_classifier/point_history_classifier_label.csv",
+            encoding="utf-8-sig",
+        ) as f:
+            point_history_classifier_labels = csv.reader(f)
+            point_history_classifier_labels = [
+                row[0] for row in point_history_classifier_labels
+            ]
 
-    # FPS Measurement ########################################################
-    cvFpsCalc = CvFpsCalc(buffer_len=10)
+        # FPS Measurement ########################################################
+        cvFpsCalc = CvFpsCalc(buffer_len=10)
 
-    # Coordinate history #################################################################
-    history_length = 16
-    point_history = deque(maxlen=history_length)
+        # Coordinate history #################################################################
+        history_length = 16
+        point_history = deque(maxlen=history_length)
 
-    # Finger gesture history ################################################
-    finger_gesture_history = deque(maxlen=history_length)
+        # Finger gesture history ################################################
+        finger_gesture_history = deque(maxlen=history_length)
 
-    #  ########################################################################
-    mode = 0
-    # present_time = datetime.now()
-    # present_time = present_time.strftime('%H:%M:%S')
-    global maxCount
-    updated_time = datetime.now() + timedelta(seconds=15)
-    updated_time = updated_time.strftime('%H:%M:%S')
-    maxCount = updated_time.split(':')[2]
-    with st.empty():
-        while datetime.now().strftime('%H:%M:%S') != updated_time:
-            fps = cvFpsCalc.get()
-            # Process Key (ESC: end) #################################################
-            # key = cv.waitKey(10)
-            # if key == 27:  # ESC
-            #     break
-            # select_mode(gestureNumber, loggingMode)
-            number, mode = gestureNumber, loggingMode
+        #  ########################################################################
+        mode = 0
+        # present_time = datetime.now()
+        # present_time = present_time.strftime('%H:%M:%S')
+        global maxCount
+        updated_time = datetime.now() + timedelta(seconds=15)
+        updated_time = updated_time.strftime("%H:%M:%S")
+        maxCount = updated_time.split(":")[2]
+        with st.empty():
+            while checkCondition(viewOnly, updated_time):
+                fps = cvFpsCalc.get()
+                number, mode = gestureNumber, loggingMode
+                # Camera capture #####################################################
+                ret, image = cap.read()
+                if not ret:
+                    break
+                image = cv.flip(image, 1)  # Mirror display
+                debug_image = copy.deepcopy(image)
 
-            # Camera capture #####################################################
-            ret, image = cap.read()
-            if not ret:
-                break
-            image = cv.flip(image, 1)  # Mirror display
-            debug_image = copy.deepcopy(image)
+                # Detection implementation #############################################################
+                image.flags.writeable = False
+                image = cv.cvtColor(image, cv.COLOR_BGRA2RGB)
+                results = hands.process(image)
+                image.flags.writeable = True
 
-            # Detection implementation #############################################################
-            image.flags.writeable = False
-            image = cv.cvtColor(image, cv.COLOR_BGRA2RGB)
-            results = hands.process(image)
-            image.flags.writeable = True
+                #  ####################################################################
+                if results.multi_hand_landmarks is not None:
+                    for hand_landmarks, handedness in zip(
+                        results.multi_hand_landmarks, results.multi_handedness
+                    ):
+                        # Bounding box calculation
+                        brect = calc_bounding_rect(debug_image, hand_landmarks)
+                        # Landmark calculation
+                        landmark_list = calc_landmark_list(
+                            debug_image, hand_landmarks)
+                        # Conversion to relative coordinates / normalized coordinates
+                        pre_processed_landmark_list = pre_process_landmark(
+                            landmark_list
+                        )
+                        pre_processed_point_history_list = pre_process_point_history(
+                            debug_image, point_history
+                        )
+                        # Write to the dataset file
+                        logging_csv(
+                            number,
+                            mode,
+                            pre_processed_landmark_list,
+                            pre_processed_point_history_list,
+                        )
 
-            #  ####################################################################
-            if results.multi_hand_landmarks is not None:
-                for hand_landmarks, handedness in zip(results.multi_hand_landmarks,
-                                                      results.multi_handedness):
-                    # Bounding box calculation
-                    brect = calc_bounding_rect(debug_image, hand_landmarks)
-                    # Landmark calculation
-                    landmark_list = calc_landmark_list(
-                        debug_image, hand_landmarks)
-                    # Conversion to relative coordinates / normalized coordinates
-                    pre_processed_landmark_list = pre_process_landmark(
-                        landmark_list)
-                    pre_processed_point_history_list = pre_process_point_history(
-                        debug_image, point_history)
-                    # Write to the dataset file
-                    logging_csv(number, mode, pre_processed_landmark_list,
-                                pre_processed_point_history_list)
-
-                    # Hand sign classification
-                    hand_sign_id = keypoint_classifier(
-                        pre_processed_landmark_list)
-                    if hand_sign_id == "Not required":  # Point gesture
-                        point_history.append(landmark_list[8])
-                    else:
-                        point_history.append([0, 0])
-
-                    # Finger gesture classification
-                    finger_gesture_id = 0
-                    point_history_len = len(pre_processed_point_history_list)
-                    if point_history_len == (history_length * 2):
-                        finger_gesture_id = point_history_classifier(
+                        # Hand sign classification
+                        hand_sign_id = keypoint_classifier(
+                            pre_processed_landmark_list)
+                        if hand_sign_id == "Not required":  # Point gesture
+                            point_history.append(landmark_list[8])
+                        else:
+                            point_history.append([0, 0])
+                        # Finger gesture classification
+                        finger_gesture_id = 0
+                        point_history_len = len(
                             pre_processed_point_history_list)
+                        if point_history_len == (history_length * 2):
+                            finger_gesture_id = point_history_classifier(
+                                pre_processed_point_history_list
+                            )
+                        if (gestureNumber == 1):
+                            hand_sign_id = 0
+                        print(f'hand_sign_id:{hand_sign_id}')
+                        # Calculates the gesture IDs in the latest detection
+                        finger_gesture_history.append(finger_gesture_id)
+                        most_common_fg_id = Counter(
+                            finger_gesture_history
+                        ).most_common()
+                        # Drawing part
+                        debug_image = draw_bounding_rect(
+                            use_brect, debug_image, brect)
+                        debug_image = draw_landmarks(
+                            debug_image, landmark_list)
+                        if (hand_sign_id != 100):
+                            debug_image = draw_info_text(
+                                debug_image,
+                                brect,
+                                handedness,
+                                keypoint_classifier_labels[hand_sign_id-1],
+                                point_history_classifier_labels[most_common_fg_id[0][0]],
+                            )
+                        else:
+                            debug_image = draw_info_text(
+                                debug_image,
+                                brect,
+                                handedness,
+                                '',
+                                point_history_classifier_labels[most_common_fg_id[0][0]],
+                            )
+                else:
+                    point_history.append([0, 0])
 
-                    # Calculates the gesture IDs in the latest detection
-                    finger_gesture_history.append(finger_gesture_id)
-                    most_common_fg_id = Counter(
-                        finger_gesture_history).most_common()
+                debug_image = draw_point_history(debug_image, point_history)
+                debug_image = draw_info(
+                    debug_image, fps, mode, number, viewOnly)
+                st.image(debug_image, use_column_width=True, channels="BGR")
+                # cv.imshow('Hand Gesture Recognition', debug_image)
+            global isLoggingComplete
+            isLoggingComplete = True
+            # cap.release()
+            # cv.destroyAllWindows()
 
-                    # Drawing part
-                    debug_image = draw_bounding_rect(
-                        use_brect, debug_image, brect)
-                    debug_image = draw_landmarks(debug_image, landmark_list)
-                    debug_image = draw_info_text(
-                        debug_image,
-                        brect,
-                        handedness,
-                        keypoint_classifier_labels[hand_sign_id],
-                        point_history_classifier_labels[most_common_fg_id[0][0]]
-                    )
-            else:
-                point_history.append([0, 0])
 
-            debug_image = draw_point_history(debug_image, point_history)
-            debug_image = draw_info(debug_image, fps, mode, number)
-            st.image(debug_image, use_column_width=True, channels='BGR')
-            # cv.imshow('Hand Gesture Recognition', debug_image)
-        global isLoggingComplete
-        isLoggingComplete = True
-        # cap.release()
-        # cv.destroyAllWindows()
+def checkCondition(viewOnly, updated_time):
+    if (viewOnly):
+        return True
+    else:
+        return datetime.now().strftime("%H:%M:%S") != updated_time
 
 
 def select_mode(key, mode):
@@ -273,10 +307,12 @@ def pre_process_point_history(image, point_history):
         if index == 0:
             base_x, base_y = point[0], point[1]
 
-        temp_point_history[index][0] = (temp_point_history[index][0] -
-                                        base_x) / image_width
-        temp_point_history[index][1] = (temp_point_history[index][1] -
-                                        base_y) / image_height
+        temp_point_history[index][0] = (
+            temp_point_history[index][0] - base_x
+        ) / image_width
+        temp_point_history[index][1] = (
+            temp_point_history[index][1] - base_y
+        ) / image_height
 
     # Convert to a one-dimensional list
     temp_point_history = list(
@@ -289,13 +325,13 @@ def logging_csv(number, mode, landmark_list, point_history_list):
     if mode == 0:
         pass
     if mode == 1 and (0 <= number <= 9):
-        csv_path = 'model/keypoint_classifier/keypoint.csv'
-        with open(csv_path, 'a', newline="") as f:
+        csv_path = "model/keypoint_classifier/keypoint.csv"
+        with open(csv_path, "a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([number, *landmark_list])
     if mode == 2 and (0 <= number <= 9):
-        csv_path = 'model/point_history_classifier/point_history.csv'
-        with open(csv_path, 'a', newline="") as f:
+        csv_path = "model/point_history_classifier/point_history.csv"
+        with open(csv_path, "a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([number, *point_history_list])
     return
@@ -304,186 +340,315 @@ def logging_csv(number, mode, landmark_list, point_history_list):
 def draw_landmarks(image, landmark_point):
     if len(landmark_point) > 0:
         # Thumb
-        cv.line(image, tuple(landmark_point[2]), tuple(landmark_point[3]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[2]), tuple(landmark_point[3]),
-                (255, 255, 255), 2)
-        cv.line(image, tuple(landmark_point[3]), tuple(landmark_point[4]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[3]), tuple(landmark_point[4]),
-                (255, 255, 255), 2)
+        cv.line(image, tuple(landmark_point[2]), tuple(
+            landmark_point[3]), (0, 0, 0), 6)
+        cv.line(
+            image,
+            tuple(landmark_point[2]),
+            tuple(landmark_point[3]),
+            (255, 255, 255),
+            2,
+        )
+        cv.line(image, tuple(landmark_point[3]), tuple(
+            landmark_point[4]), (0, 0, 0), 6)
+        cv.line(
+            image,
+            tuple(landmark_point[3]),
+            tuple(landmark_point[4]),
+            (255, 255, 255),
+            2,
+        )
 
         # Index finger
-        cv.line(image, tuple(landmark_point[5]), tuple(landmark_point[6]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[5]), tuple(landmark_point[6]),
-                (255, 255, 255), 2)
-        cv.line(image, tuple(landmark_point[6]), tuple(landmark_point[7]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[6]), tuple(landmark_point[7]),
-                (255, 255, 255), 2)
-        cv.line(image, tuple(landmark_point[7]), tuple(landmark_point[8]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[7]), tuple(landmark_point[8]),
-                (255, 255, 255), 2)
+        cv.line(image, tuple(landmark_point[5]), tuple(
+            landmark_point[6]), (0, 0, 0), 6)
+        cv.line(
+            image,
+            tuple(landmark_point[5]),
+            tuple(landmark_point[6]),
+            (255, 255, 255),
+            2,
+        )
+        cv.line(image, tuple(landmark_point[6]), tuple(
+            landmark_point[7]), (0, 0, 0), 6)
+        cv.line(
+            image,
+            tuple(landmark_point[6]),
+            tuple(landmark_point[7]),
+            (255, 255, 255),
+            2,
+        )
+        cv.line(image, tuple(landmark_point[7]), tuple(
+            landmark_point[8]), (0, 0, 0), 6)
+        cv.line(
+            image,
+            tuple(landmark_point[7]),
+            tuple(landmark_point[8]),
+            (255, 255, 255),
+            2,
+        )
 
         # Middle finger
-        cv.line(image, tuple(landmark_point[9]), tuple(landmark_point[10]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[9]), tuple(landmark_point[10]),
-                (255, 255, 255), 2)
-        cv.line(image, tuple(landmark_point[10]), tuple(landmark_point[11]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[10]), tuple(landmark_point[11]),
-                (255, 255, 255), 2)
-        cv.line(image, tuple(landmark_point[11]), tuple(landmark_point[12]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[11]), tuple(landmark_point[12]),
-                (255, 255, 255), 2)
+        cv.line(
+            image, tuple(landmark_point[9]), tuple(
+                landmark_point[10]), (0, 0, 0), 6
+        )
+        cv.line(
+            image,
+            tuple(landmark_point[9]),
+            tuple(landmark_point[10]),
+            (255, 255, 255),
+            2,
+        )
+        cv.line(
+            image, tuple(landmark_point[10]), tuple(
+                landmark_point[11]), (0, 0, 0), 6
+        )
+        cv.line(
+            image,
+            tuple(landmark_point[10]),
+            tuple(landmark_point[11]),
+            (255, 255, 255),
+            2,
+        )
+        cv.line(
+            image, tuple(landmark_point[11]), tuple(
+                landmark_point[12]), (0, 0, 0), 6
+        )
+        cv.line(
+            image,
+            tuple(landmark_point[11]),
+            tuple(landmark_point[12]),
+            (255, 255, 255),
+            2,
+        )
 
         # Ring finger
-        cv.line(image, tuple(landmark_point[13]), tuple(landmark_point[14]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[13]), tuple(landmark_point[14]),
-                (255, 255, 255), 2)
-        cv.line(image, tuple(landmark_point[14]), tuple(landmark_point[15]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[14]), tuple(landmark_point[15]),
-                (255, 255, 255), 2)
-        cv.line(image, tuple(landmark_point[15]), tuple(landmark_point[16]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[15]), tuple(landmark_point[16]),
-                (255, 255, 255), 2)
+        cv.line(
+            image, tuple(landmark_point[13]), tuple(
+                landmark_point[14]), (0, 0, 0), 6
+        )
+        cv.line(
+            image,
+            tuple(landmark_point[13]),
+            tuple(landmark_point[14]),
+            (255, 255, 255),
+            2,
+        )
+        cv.line(
+            image, tuple(landmark_point[14]), tuple(
+                landmark_point[15]), (0, 0, 0), 6
+        )
+        cv.line(
+            image,
+            tuple(landmark_point[14]),
+            tuple(landmark_point[15]),
+            (255, 255, 255),
+            2,
+        )
+        cv.line(
+            image, tuple(landmark_point[15]), tuple(
+                landmark_point[16]), (0, 0, 0), 6
+        )
+        cv.line(
+            image,
+            tuple(landmark_point[15]),
+            tuple(landmark_point[16]),
+            (255, 255, 255),
+            2,
+        )
 
         # Little finger
-        cv.line(image, tuple(landmark_point[17]), tuple(landmark_point[18]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[17]), tuple(landmark_point[18]),
-                (255, 255, 255), 2)
-        cv.line(image, tuple(landmark_point[18]), tuple(landmark_point[19]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[18]), tuple(landmark_point[19]),
-                (255, 255, 255), 2)
-        cv.line(image, tuple(landmark_point[19]), tuple(landmark_point[20]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[19]), tuple(landmark_point[20]),
-                (255, 255, 255), 2)
+        cv.line(
+            image, tuple(landmark_point[17]), tuple(
+                landmark_point[18]), (0, 0, 0), 6
+        )
+        cv.line(
+            image,
+            tuple(landmark_point[17]),
+            tuple(landmark_point[18]),
+            (255, 255, 255),
+            2,
+        )
+        cv.line(
+            image, tuple(landmark_point[18]), tuple(
+                landmark_point[19]), (0, 0, 0), 6
+        )
+        cv.line(
+            image,
+            tuple(landmark_point[18]),
+            tuple(landmark_point[19]),
+            (255, 255, 255),
+            2,
+        )
+        cv.line(
+            image, tuple(landmark_point[19]), tuple(
+                landmark_point[20]), (0, 0, 0), 6
+        )
+        cv.line(
+            image,
+            tuple(landmark_point[19]),
+            tuple(landmark_point[20]),
+            (255, 255, 255),
+            2,
+        )
 
         # Palm
-        cv.line(image, tuple(landmark_point[0]), tuple(landmark_point[1]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[0]), tuple(landmark_point[1]),
-                (255, 255, 255), 2)
-        cv.line(image, tuple(landmark_point[1]), tuple(landmark_point[2]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[1]), tuple(landmark_point[2]),
-                (255, 255, 255), 2)
-        cv.line(image, tuple(landmark_point[2]), tuple(landmark_point[5]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[2]), tuple(landmark_point[5]),
-                (255, 255, 255), 2)
-        cv.line(image, tuple(landmark_point[5]), tuple(landmark_point[9]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[5]), tuple(landmark_point[9]),
-                (255, 255, 255), 2)
-        cv.line(image, tuple(landmark_point[9]), tuple(landmark_point[13]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[9]), tuple(landmark_point[13]),
-                (255, 255, 255), 2)
-        cv.line(image, tuple(landmark_point[13]), tuple(landmark_point[17]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[13]), tuple(landmark_point[17]),
-                (255, 255, 255), 2)
-        cv.line(image, tuple(landmark_point[17]), tuple(landmark_point[0]),
-                (0, 0, 0), 6)
-        cv.line(image, tuple(landmark_point[17]), tuple(landmark_point[0]),
-                (255, 255, 255), 2)
+        cv.line(image, tuple(landmark_point[0]), tuple(
+            landmark_point[1]), (0, 0, 0), 6)
+        cv.line(
+            image,
+            tuple(landmark_point[0]),
+            tuple(landmark_point[1]),
+            (255, 255, 255),
+            2,
+        )
+        cv.line(image, tuple(landmark_point[1]), tuple(
+            landmark_point[2]), (0, 0, 0), 6)
+        cv.line(
+            image,
+            tuple(landmark_point[1]),
+            tuple(landmark_point[2]),
+            (255, 255, 255),
+            2,
+        )
+        cv.line(image, tuple(landmark_point[2]), tuple(
+            landmark_point[5]), (0, 0, 0), 6)
+        cv.line(
+            image,
+            tuple(landmark_point[2]),
+            tuple(landmark_point[5]),
+            (255, 255, 255),
+            2,
+        )
+        cv.line(image, tuple(landmark_point[5]), tuple(
+            landmark_point[9]), (0, 0, 0), 6)
+        cv.line(
+            image,
+            tuple(landmark_point[5]),
+            tuple(landmark_point[9]),
+            (255, 255, 255),
+            2,
+        )
+        cv.line(
+            image, tuple(landmark_point[9]), tuple(
+                landmark_point[13]), (0, 0, 0), 6
+        )
+        cv.line(
+            image,
+            tuple(landmark_point[9]),
+            tuple(landmark_point[13]),
+            (255, 255, 255),
+            2,
+        )
+        cv.line(
+            image, tuple(landmark_point[13]), tuple(
+                landmark_point[17]), (0, 0, 0), 6
+        )
+        cv.line(
+            image,
+            tuple(landmark_point[13]),
+            tuple(landmark_point[17]),
+            (255, 255, 255),
+            2,
+        )
+        cv.line(
+            image, tuple(landmark_point[17]), tuple(
+                landmark_point[0]), (0, 0, 0), 6
+        )
+        cv.line(
+            image,
+            tuple(landmark_point[17]),
+            tuple(landmark_point[0]),
+            (255, 255, 255),
+            2,
+        )
 
     # Key Points
     for index, landmark in enumerate(landmark_point):
         if index == 0:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 1:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 2:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 3:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 4:
-            cv.circle(image, (landmark[0], landmark[1]), 8, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      8, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 8, (0, 0, 0), 1)
         if index == 5:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 6:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 7:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 8:
-            cv.circle(image, (landmark[0], landmark[1]), 8, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      8, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 8, (0, 0, 0), 1)
         if index == 9:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 10:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 11:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 12:
-            cv.circle(image, (landmark[0], landmark[1]), 8, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      8, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 8, (0, 0, 0), 1)
         if index == 13:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 14:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 15:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 16:
-            cv.circle(image, (landmark[0], landmark[1]), 8, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      8, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 8, (0, 0, 0), 1)
         if index == 17:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 18:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 19:
-            cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 20:
-            cv.circle(image, (landmark[0], landmark[1]), 8, (255, 255, 255),
-                      -1)
+            cv.circle(image, (landmark[0], landmark[1]),
+                      8, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 8, (0, 0, 0), 1)
 
     return image
@@ -492,21 +657,28 @@ def draw_landmarks(image, landmark_point):
 def draw_bounding_rect(use_brect, image, brect):
     if use_brect:
         # Outer rectangle
-        cv.rectangle(image, (brect[0], brect[1]), (brect[2], brect[3]),
-                     (0, 0, 0), 1)
+        cv.rectangle(image, (brect[0], brect[1]),
+                     (brect[2], brect[3]), (0, 0, 0), 1)
 
     return image
 
 
-def draw_info_text(image, brect, handedness, hand_sign_text,
-                   finger_gesture_text):
-    cv.rectangle(image, (brect[0], brect[1]), (brect[2], brect[1] - 22),
-                 (0, 0, 0), -1)
+def draw_info_text(image, brect, handedness, hand_sign_text, finger_gesture_text):
+    cv.rectangle(image, (brect[0], brect[1]),
+                 (brect[2], brect[1] - 22), (0, 0, 0), -1)
     info_text = handedness.classification[0].label[0:]
     if hand_sign_text != "":
-        info_text = info_text + ':' + hand_sign_text
-    cv.putText(image, info_text, (brect[0] + 5, brect[1] - 4),
-               cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv.LINE_AA)
+        info_text = info_text + ":" + hand_sign_text
+    cv.putText(
+        image,
+        info_text,
+        (brect[0] + 5, brect[1] - 4),
+        cv.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (255, 255, 255),
+        1,
+        cv.LINE_AA,
+    )
     # if finger_gesture_text != "":
     #     cv.putText(image, "Finger Gesture:" + finger_gesture_text, (10, 60),
     #                cv.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 4, cv.LINE_AA)
@@ -519,43 +691,68 @@ def draw_info_text(image, brect, handedness, hand_sign_text,
 def draw_point_history(image, point_history):
     for index, point in enumerate(point_history):
         if point[0] != 0 and point[1] != 0:
-            cv.circle(image, (point[0], point[1]), 1 + int(index / 2),
-                      (152, 251, 152), 2)
+            cv.circle(
+                image, (point[0], point[1]), 1 +
+                int(index / 2), (152, 251, 152), 2
+            )
 
     return image
 
 
-def draw_info(image, fps, mode, number):
-    rmeainingTime = str(int(maxCount)-int(datetime.now().strftime('%S')))
-    cv.putText(image, "Remaining Time : " + rmeainingTime, (10, 30), cv.FONT_HERSHEY_SIMPLEX,
-               1.0, (0, 0, 0), 4, cv.LINE_AA)
+def draw_info(image, fps, mode, number, viewOnly):
+    rmeainingTime = str(int(maxCount) - int(datetime.now().strftime("%S")))
+    if (viewOnly == False):
+        cv.putText(
+            image,
+            "Remaining Time : " + rmeainingTime,
+            (10, 30),
+            cv.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (0, 0, 0),
+            4,
+            cv.LINE_AA,
+        )
     # cv.putText(image, "FPS:" + str(fps), (10, 30), cv.FONT_HERSHEY_SIMPLEX,
     #            1.0, (255, 255, 255), 2, cv.LINE_AA)
-    mode_string = ['Logging Key Point', 'Logging Point History']
+    mode_string = ["Logging Key Point", "Logging Point History"]
     if 1 <= mode <= 2:
-        cv.putText(image, "MODE:" + mode_string[mode - 1], (10, 90),
-                   cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1,
-                   cv.LINE_AA)
+        cv.putText(
+            image,
+            "MODE:" + mode_string[mode - 1],
+            (10, 90),
+            cv.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            1,
+            cv.LINE_AA,
+        )
         if 0 <= number <= 9:
-            cv.putText(image, "NUM:" + str(number), (10, 110),
-                       cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1,
-                       cv.LINE_AA)
+            cv.putText(
+                image,
+                "NUM:" + str(number),
+                (10, 110),
+                cv.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                1,
+                cv.LINE_AA,
+            )
     return image
 
 
 def getGestureLabel():
-    with open('model/keypoint_classifier/keypoint_classifier_label.csv',
-              encoding='utf-8-sig') as f:
+    with open(
+        "model/keypoint_classifier/keypoint_classifier_label.csv", encoding="utf-8-sig"
+    ) as f:
         keypoint_classifier_labels = csv.reader(f)
-        keypoint_classifier_labels = [
-            row[0] for row in keypoint_classifier_labels
-        ]
+        keypoint_classifier_labels = [row[0]
+                                      for row in keypoint_classifier_labels]
     return keypoint_classifier_labels
 
 
 state = st.session_state
 
-st.title('Home automation using hand gesture')
+st.title("Home automation using hand gesture")
 
 st.markdown(
     """
@@ -573,13 +770,10 @@ st.markdown(
 )
 
 # Create Sidebar
-st.sidebar.title('Sidebar')
-st.sidebar.subheader('Parameter')
+st.sidebar.title("Sidebar")
+st.sidebar.subheader("Parameter")
 
-app_mode = st.sidebar.selectbox(
-    'App Mode',
-    ['Set Gesture', 'Video', "About"]
-)
+app_mode = st.sidebar.selectbox("App Mode", ["Set Gesture", "Video", "About"])
 if "disabled" not in state:
     state["disabled"] = False
 
@@ -590,6 +784,32 @@ def disable():
 
 def reload():
     state["disabled"] = False
+
+
+def openModal(onClickYes):
+    title = '<p style = "font-family: Courier;color: black;font-weight: bolder;font-size: larger;" >Gesture detection complete </p>'
+    modal = Modal(title, key="modal")
+    open_modal = st.button("Open")
+    if open_modal:
+        modal.open()
+    if modal.is_open():
+        with modal.container():
+            label = '<p style = "font-family: Courier;color: blue;font-weight: bolder;font-size: medium;text-align: center;" >Are you want continue to next process ?</p>'
+            st.markdown(label, unsafe_allow_html=True)
+            # st.image(image, channels="BGR")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                pass
+            with col2:
+                yesBtn = st.button("Yes")
+                if yesBtn:
+                    onClickYes
+            with col3:
+                noBtn = st.button("No")
+                if noBtn:
+                    modal.close()
+            with col4:
+                pass
 
 
 # Add Sidebar and Window style
@@ -609,39 +829,43 @@ st.markdown(
 )
 
 # About Page
-if app_mode == 'About':
+if app_mode == "About":
     reload()
-    st.markdown('''
+    state["disabled"] = False
+    st.markdown(
+        """
                 ## ABOUT\n
                 In this application we are using **MediaPipe** for a hand gesture detection. **StreamLit** is used to create the Web Graphical User Interface (GUI) \n
-    ''')
-    option = st.selectbox(
-        'Saved Gestures',
-        getGestureLabel())
-    st.write('You selected:', option)
+    """
+    )
+    option = st.selectbox("Saved Gestures", getGestureLabel())
+    st.write("You selected:", option)
 
 
-if app_mode == 'Set Gesture':
+if app_mode == "Set Gesture":
     isLoggingComplete = False
-    with st.form(key='Form1', clear_on_submit=False):
+    with st.form(key="Form1", clear_on_submit=False):
         with st.sidebar:
-            user_word = st.sidebar.text_input("Enter Gesture Name",
-                                              disabled=state.disabled,
-                                              on_change=disable)
+            user_word = st.sidebar.text_input(
+                "Enter Gesture Name", disabled=state.disabled, on_change=disable
+            )
     if user_word != "" and state["disabled"]:
-        with st.spinner('Wait for it...'):
-            time.sleep(15)
-        st.button('Cancel', on_click=reload, use_container_width=True)
-        main(len(getGestureLabel()), 1)
-    if isLoggingComplete:
-        csv_path = 'model/keypoint_classifier/keypoint_classifier_label.csv'
-        with open(csv_path, 'a', newline='', encoding='utf-8') as csv_file:
+        csv_path = "model/keypoint_classifier/keypoint_classifier_label.csv"
+        with open(csv_path, "a", newline="", encoding="utf-8") as csv_file:
             writer = csv.writer(csv_file)
             writer.writerow([user_word])
-        st.write('Done')
+        st.button("Cancel", on_click=reload, use_container_width=True)
+        main(len(getGestureLabel()), 1, False)
+    if isLoggingComplete:
+        run_keypoint_classification()
+        # openModal(run_keypoint_classification())
 
 
-# About Page
-if app_mode == 'Video':
-    with st.spinner('Wait for it...'):
-        time.sleep(1)
+# Video Page
+if app_mode == "Video":
+    # run_keypoint_classification()
+    state["disabled"] = False
+    if len(getGestureLabel()) != 0:
+        main(len(getGestureLabel()), 0, True)
+    else:
+        st.title("no data found")
