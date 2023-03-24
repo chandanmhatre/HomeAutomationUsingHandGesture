@@ -3,6 +3,8 @@
 import numpy as np
 import tensorflow as tf
 
+from keypoint_classification import getGestureLabel
+
 
 class KeyPointClassifier(object):
     def __init__(
@@ -32,8 +34,11 @@ class KeyPointClassifier(object):
         print(result)
         result_index = np.argmax(result)
         print(result[result_index])
-        # pending
-        if (result[result_index] > 0.95):
-            return result_index
+        print(result_index)
+        # if len(getGestureLabel()) == 1:
+        if result.ndim < 1:
+            return 0
+        if (result[result_index] > 0.98):
+            return result_index - 1
         else:
             return 100

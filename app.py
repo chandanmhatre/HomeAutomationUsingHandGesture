@@ -1,3 +1,6 @@
+import jsonlines
+import os
+import json
 import tensorflow as tf
 import csv
 import copy
@@ -20,9 +23,6 @@ import streamlit.components.v1 as components
 import h5py
 
 
-isLoggingComplete = False
-
-
 def get_args():
     parser = argparse.ArgumentParser()
 
@@ -35,19 +35,19 @@ def get_args():
         "--min_detection_confidence",
         help="min_detection_confidence",
         type=float,
-        default=0.7,
+        default=0.8,
     )
     parser.add_argument(
         "--min_tracking_confidence",
         help="min_tracking_confidence",
         type=int,
-        default=0.5,
+        default=0.8,
     )
     args = parser.parse_args()
     return args
 
 
-def main(gestureNumber, loggingMode, viewOnly):
+def main(gestureNumber, loggingMode, viewOnly, automationOn):
     with st.spinner(""):
         # Argument parsing #################################################################
         args = get_args()
@@ -88,6 +88,7 @@ def main(gestureNumber, loggingMode, viewOnly):
             keypoint_classifier_labels = csv.reader(f)
             keypoint_classifier_labels = [row[0]
                                           for row in keypoint_classifier_labels]
+        keypoint_classifier_labels = getGestureLabel()
         with open(
             "model/point_history_classifier/point_history_classifier_label.csv",
             encoding="utf-8-sig",
@@ -123,12 +124,30 @@ def main(gestureNumber, loggingMode, viewOnly):
                 ret, image = cap.read()
                 if not ret:
                     break
+                # image = cv.bilateralFilter(image, 5, 50, 100)
                 image = cv.flip(image, 1)  # Mirror display
                 debug_image = copy.deepcopy(image)
 
                 # Detection implementation #############################################################
                 image.flags.writeable = False
                 image = cv.cvtColor(image, cv.COLOR_BGRA2RGB)
+
+                # ###########
+                # ret, thresh = cv.threshold(cv.cvtColor(
+                #     image, cv.COLOR_BGR2GRAY), 127, 255, 0)
+                # M = cv.moments(thresh)
+                # cX = int(M["m10"] / M["m00"])
+                # cY = int(M["m01"] / M["m00"])
+                # # print(cX)
+                # # print(cY)
+                # ####################
+                # if cX > 200 and cX < 400:
+                #     print('middel')
+                # if cX > 1 and cX < 200:
+                #     print('left')
+                # if cX > 400 and cX < 600:
+                #     print('rigth')
+
                 results = hands.process(image)
                 image.flags.writeable = True
 
@@ -172,8 +191,6 @@ def main(gestureNumber, loggingMode, viewOnly):
                             finger_gesture_id = point_history_classifier(
                                 pre_processed_point_history_list
                             )
-                        if (gestureNumber == 1):
-                            hand_sign_id = 0
                         print(f'hand_sign_id:{hand_sign_id}')
                         # Calculates the gesture IDs in the latest detection
                         finger_gesture_history.append(finger_gesture_id)
@@ -186,11 +203,13 @@ def main(gestureNumber, loggingMode, viewOnly):
                         debug_image = draw_landmarks(
                             debug_image, landmark_list)
                         if (hand_sign_id != 100):
+                            if automationOn:
+                                print(keypoint_classifier_labels[hand_sign_id])
                             debug_image = draw_info_text(
                                 debug_image,
                                 brect,
                                 handedness,
-                                keypoint_classifier_labels[hand_sign_id-1],
+                                keypoint_classifier_labels[hand_sign_id],
                                 point_history_classifier_labels[most_common_fg_id[0][0]],
                             )
                         else:
@@ -208,11 +227,10 @@ def main(gestureNumber, loggingMode, viewOnly):
                 debug_image = draw_info(
                     debug_image, fps, mode, number, viewOnly)
                 st.image(debug_image, use_column_width=True, channels="BGR")
-                # cv.imshow('Hand Gesture Recognition', debug_image)
             global isLoggingComplete
             isLoggingComplete = True
-            # cap.release()
-            # cv.destroyAllWindows()
+            cap.release()
+            cv.destroyAllWindows()
 
 
 def checkCondition(viewOnly, updated_time):
@@ -222,17 +240,17 @@ def checkCondition(viewOnly, updated_time):
         return datetime.now().strftime("%H:%M:%S") != updated_time
 
 
-def select_mode(key, mode):
-    number = -1
-    if 0 <= key <= 9:  # 0 ~ 9
-        number = key
-    if key == 110:  # n
-        mode = 0
-    if key == 107:  # k
-        mode = 1
-    if key == 104:  # h
-        mode = 2
-    return number, mode
+# def select_mode(key, mode):
+#     number = -1
+#     if 0 <= key <= 9:  # 0 ~ 9
+#         number = key
+#     if key == 110:  # n
+#         mode = 0
+#     if key == 107:  # k
+#         mode = 1
+#     if key == 104:  # h
+#         mode = 2
+#     return number, mode
 
 
 def calc_bounding_rect(image, landmarks):
@@ -666,6 +684,7 @@ def draw_bounding_rect(use_brect, image, brect):
 def draw_info_text(image, brect, handedness, hand_sign_text, finger_gesture_text):
     cv.rectangle(image, (brect[0], brect[1]),
                  (brect[2], brect[1] - 22), (0, 0, 0), -1)
+    print(brect)
     info_text = handedness.classification[0].label[0:]
     if hand_sign_text != "":
         info_text = info_text + ":" + hand_sign_text
@@ -679,12 +698,6 @@ def draw_info_text(image, brect, handedness, hand_sign_text, finger_gesture_text
         1,
         cv.LINE_AA,
     )
-    # if finger_gesture_text != "":
-    #     cv.putText(image, "Finger Gesture:" + finger_gesture_text, (10, 60),
-    #                cv.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 4, cv.LINE_AA)
-    #     cv.putText(image, "Finger Gesture:" + finger_gesture_text, (10, 60),
-    #                cv.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2,
-    #                cv.LINE_AA)
     return image
 
 
@@ -751,7 +764,6 @@ def getGestureLabel():
 
 
 state = st.session_state
-
 st.title("Home automation using hand gesture")
 
 st.markdown(
@@ -782,7 +794,7 @@ def disable():
     state["disabled"] = True
 
 
-def reload():
+def enable():
     state["disabled"] = False
 
 
@@ -830,7 +842,7 @@ st.markdown(
 
 # About Page
 if app_mode == "About":
-    reload()
+    enable()
     state["disabled"] = False
     st.markdown(
         """
@@ -842,30 +854,60 @@ if app_mode == "About":
     st.write("You selected:", option)
 
 
+jsonFile = 'gesture-pin.csv'
+
+
+def writeJson(user_word, selectedPin):
+    isDuplicatePin = False
+    with open(jsonFile, 'r') as read:
+        file = csv.reader(read, delimiter=',')
+        lines = list(file)
+        for obj in lines:
+            if str(selectedPin) == str(obj[1]):
+                isDuplicatePin = True
+                st.error(f'Pin {selectedPin} is already selected for {obj[0]}')
+                break
+    if isDuplicatePin == False:
+        with open(jsonFile, 'a', newline="", encoding="utf-8") as append:
+            file = csv.writer(append)
+            file.writerow([user_word, selectedPin])
+    return isDuplicatePin
+
+
 if app_mode == "Set Gesture":
+    numbers = list(itertools.chain(range(1, 21)))
     isLoggingComplete = False
     with st.form(key="Form1", clear_on_submit=False):
         with st.sidebar:
             user_word = st.sidebar.text_input(
                 "Enter Gesture Name", disabled=state.disabled, on_change=disable
             )
-    if user_word != "" and state["disabled"]:
-        csv_path = "model/keypoint_classifier/keypoint_classifier_label.csv"
-        with open(csv_path, "a", newline="", encoding="utf-8") as csv_file:
-            writer = csv.writer(csv_file)
-            writer.writerow([user_word])
-        st.button("Cancel", on_click=reload, use_container_width=True)
-        main(len(getGestureLabel()), 1, False)
-    if isLoggingComplete:
-        run_keypoint_classification()
-        # openModal(run_keypoint_classification())
+            selectedPin = st.sidebar.selectbox(
+                "Select Pin", numbers
+            )
+    if user_word in getGestureLabel():
+        st.error(f'{user_word} already exit')
+        enable()
+        changeBtn = st.button('change name')
+        if changeBtn:
+            enable()
+    else:
+        if user_word != "" and state["disabled"] and writeJson(user_word, selectedPin) == False:
+            csv_path = "model/keypoint_classifier/keypoint_classifier_label.csv"
+            with open(csv_path, "a", newline="", encoding="utf-8") as csv_file:
+                writer = csv.writer(csv_file)
+                writer.writerow([user_word])
+            st.button("Cancel", on_click=enable, use_container_width=True)
+            main(len(getGestureLabel()), 1, False, False)
+            if isLoggingComplete:
+                run_keypoint_classification()
 
 
 # Video Page
 if app_mode == "Video":
-    # run_keypoint_classification()
-    state["disabled"] = False
+    enable()
     if len(getGestureLabel()) != 0:
-        main(len(getGestureLabel()), 0, True)
+        checked = st.checkbox('automation on')
+        main(len(getGestureLabel()), 0, True, checked)
     else:
         st.title("no data found")
