@@ -1,144 +1,47 @@
 import firebase_admin
 from firebase_admin import credentials, firestore
 import threading
-from gpiozero import LED, Button, Buzzer, PWMLED
 from time import sleep
 
-cred = credentials.Certificate("serviceAccountKey.json")
-firebase_admin.initialize_app(cred)
 
-led1 = LED(20)
-led2 = PWMLED(21)
-bz = Buzzer(17)
-
-btn = Button(16)
+if not firebase_admin._apps:
+    cred = credentials.Certificate("serviceAccountKey.json")
+    firebase_admin.initialize_app(cred)
 
 db = firestore.client()
 
-# event for notifieng main thread
-callback_done = threading.Event()
 
-boolValue = False
-
-# Callback on snapshot function to capture changes
+gesturePinDB = db.collection('automation').document('gesture_pin')
+onOff = db.collection('automation').document('on_off')
+plugPin = db.collection('automation').document('plug_pin')
 
 
-def on_snapshot(doc_snapshot, changes, read_time):
-    for doc in doc_snapshot:
-        docDict = doc.to_dict()
-        isTrue = docDict['first']
-        print(f"{doc.id} = {isTrue}")
-        global boolValue
-        boolValue = isTrue
-    callback_done.set()
+class FirbaseServices(object):
+    def addNewGesture(self, gestureName, pinNo):
+        if db.collection('automation').get() == []:
+            gesturePinDB.set({
+                gestureName: pinNo
+            })
+            onOff.set({
+                str(pinNo): False
+            })
+        else:
+            gesturePinDB.update({
+                gestureName: pinNo
+            })
+            onOff.update({
+                str(pinNo): False
+            })
 
+    def updatePinValue(self, pinNo, onOrOff):
+        onOff.update({
+            str(pinNo): onOrOff
+        })
 
-doc_ref = db.collection(u'gesture_pin').document(u'on_off')
+    def getGesturePinDetails(self):
+        data = onOff.get()
+        return data.to_dict()
 
-doc_watch = doc_ref.on_snapshot(on_snapshot)
-
-while True:
-    print(boolValue)
-    sleep(0.5)
-
-# CREATE OPERATION
-# db.collection('outputDevices').document('digitalLED').set(
-#     {
-#         'status' : False
-#     }
-# )
-# db.collection('outputDevices').document('pwmLED').set(
-#     {
-#         'brightness' : 0
-#     }
-# )
-# db.collection('outputDevices').document('buzzer').set(
-#     {
-#         'alarm' : False
-#     }
-# )
-
-# db.collection('inputDevices').document('button').set(
-#     {
-#         'value' : False
-#     }
-
-# READ OPERATION
-# while True:
-#     readStatus = db.collection('outputDevices').document('digitalLED').get()
-#     docDict = readStatus.to_dict()
-#     LEDstatus = docDict['status']
-
-#     if(LEDstatus):
-#         led1.on()
-#     else :
-#         led1.off()
-
-# UPDATE OPERATION
-# while True:
-#     if(btn.is_active):
-#         db.collection('inputDevices').document('button').update(
-#             {
-#                 'value' : True
-#             }
-#         )
-#     else:
-#         db.collection('inputDevices').document('button').update(
-#             {
-#                 'value' : False
-#             }
-#         )
-
-# DELETE OPERATION
-# db.collection('outputDevices').document('buzzer').update(
-#     {
-#         'alarm' : firestore.DELETE_FIELD
-#     }
-# )
-
-# ALARM (READ OPERATION)
-# while True:
-#     readStatus = db.collection('outputDevices').document('buzzer').get()
-#     docDict = readStatus.to_dict()
-#     triggerAlarm = docDict['alarm']
-
-#     if(triggerAlarm):
-#         bz.on()
-#         sleep(1)
-#         bz.off()
-#         sleep(1)
-
-# LED-BUTTON Firestore Medium
-# while True:
-#     if(btn.is_active):
-#         db.collection('inputDevices').document('button').update(
-#             {
-#                 'value' : True
-#             }
-#         )
-#     else:
-#         db.collection('inputDevices').document('button').update(
-#             {
-#                 'value' : False
-#             }
-#         )
-#     readStatus = db.collection('inputDevices').document('button').get()
-#     docDict = readStatus.to_dict()
-#     Btnstatus = docDict['value']
-
-#     if(Btnstatus):
-#         led1.on()
-#     else:
-#         led1.off()
-
-# PWMLED
-
-# while True:
-#     readBrightness = db.collection('outputDevices').document('pwmLED').get()
-#     docDict = readBrightness.to_dict()
-#     brightness = docDict['brightness']
-
-#     if(brightness >= 0 and brightness <= 1):
-#         led2.value = brightness
-#     else:
-#         led2.value = 0
+    def getPlugPinDetails(self):
+        data = plugPin.get()
+        return data.to_dict()
