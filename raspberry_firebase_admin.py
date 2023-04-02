@@ -15,6 +15,16 @@ gesturePinDB = db.collection('automation').document('gesture_pin')
 onOff = db.collection('automation').document('on_off')
 plugPin = db.collection('automation').document('plug_pin')
 
+if db.collection('automation').get() == []:
+    plugPin.set({
+        '1st': 35,
+        '2nd': 36,
+        '3rd': 37,
+        '4rth': 38
+    })
+    gesturePinDB.set({})
+    onOff.set({})
+
 
 class FirbaseServices(object):
     def addNewGesture(self, gestureName, pinNo):

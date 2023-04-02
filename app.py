@@ -1,14 +1,12 @@
 import csv
-import itertools
 import os
 import pickle
 import time
 import cv2
 import numpy as np
+import pandas as pd
 from raspberry_firebase_admin import FirbaseServices
 import streamlit as st
-from streamlit_modal import Modal
-import streamlit.components.v1 as components
 
 
 class mpHands:
@@ -41,8 +39,9 @@ class mpHands:
 
 
 mainModelPath = 'MainModel/main.pkl'
-gesturePinCsvPath = 'model/gesture-pin.csv'
-gestureNamesCsvPath = 'model/gesture-names.csv'
+gesturePinCsvPath = 'csvData/gesture-pin.csv'
+gestureNamesCsvPath = 'csvData/gesture-names.csv'
+gesturePlugCsvPath = 'csvData/gesture-plug.csv'
 detectionKeypointLength = 10
 firbaseService = FirbaseServices()
 findHands = mpHands()
@@ -71,6 +70,7 @@ def main(gestureName, isTraining, automationOn):
                 gestNames = pickle.load(f)
                 knownGestures = pickle.load(f)
         tol = 10
+        cancelBtnHolder.empty()
         with st.empty():
             while checkCondition(isTraining, knownGestures):
                 ret, frame = cam.read()
@@ -137,22 +137,7 @@ def main(gestureName, isTraining, automationOn):
                 with open('model/'+trainModelName, 'wb') as f:
                     pickle.dump(gestNames, f)
                     pickle.dump(knownGestures, f)
-                newGestNames = []
-                newKnownGestures = []
-                for d in os.listdir("model/"):
-                    if d.endswith('.pkl'):
-                        with open("model/"+d, 'rb') as f:
-                            gestNames2 = pickle.load(f)
-                            knownGestures2 = pickle.load(f)
-                            for data in gestNames2:
-                                newGestNames.append(data)
-                            for data in knownGestures2:
-                                newKnownGestures.append(data)
-                with open(mainModelPath, 'wb') as out:
-                    pickle.dump(
-                        newGestNames, out, protocol=pickle.HIGHEST_PROTOCOL)
-                    pickle.dump(
-                        newKnownGestures, out, protocol=pickle.HIGHEST_PROTOCOL)
+                buildMainModel()
                 global isLoggingComplete
                 isLoggingComplete = True
 
@@ -162,6 +147,25 @@ def checkCondition(isTraining, knownGestures):
         return True
     else:
         return len(knownGestures) < detectionKeypointLength
+
+
+def buildMainModel():
+    newGestNames = []
+    newKnownGestures = []
+    for d in os.listdir("model/"):
+        if d.endswith('.pkl'):
+            with open("model/"+d, 'rb') as f:
+                gestNames2 = pickle.load(f)
+                knownGestures2 = pickle.load(f)
+                for data in gestNames2:
+                    newGestNames.append(data)
+                for data in knownGestures2:
+                    newKnownGestures.append(data)
+    with open(mainModelPath, 'wb') as out:
+        pickle.dump(
+            newGestNames, out, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump(
+            newKnownGestures, out, protocol=pickle.HIGHEST_PROTOCOL)
 
 
 def calc_bounding_rect(image, landmarks):
@@ -567,22 +571,6 @@ def findGesture(unknownGesture, knownGestures, keyPoints, gestNames, tol):
     return gesture
 
 
-def getGestureNames():
-    with open(gestureNamesCsvPath, encoding="utf-8-sig"
-              ) as f:
-        gesture_labels = csv.reader(f)
-        gesture_labels = [row for row in gesture_labels]
-    return gesture_labels
-
-
-def getGesturePin():
-    with open(gesturePinCsvPath, encoding="utf-8-sig"
-              ) as f:
-        gesture_pin_labels = csv.reader(f)
-        gesture_pin_labels = [row for row in gesture_pin_labels]
-    return gesture_pin_labels
-
-
 state = st.session_state
 st.title("Home automation using hand gesture")
 
@@ -605,7 +593,8 @@ st.markdown(
 st.sidebar.title("Sidebar")
 st.sidebar.subheader("Parameter")
 
-app_mode = st.sidebar.selectbox("App Mode", ["Set Gesture", "Video", "About"])
+app_mode = st.sidebar.selectbox(
+    "App Mode", ["Set Gesture", "Video", "Config", "About"])
 if "disabled" not in state:
     state["disabled"] = False
 
@@ -616,32 +605,6 @@ def disable():
 
 def enable():
     state["disabled"] = False
-
-
-def openModal(onClickYes):
-    title = '<p style = "font-family: Courier;color: black;font-weight: bolder;font-size: larger;" >Gesture detection complete </p>'
-    modal = Modal(title, key="modal")
-    open_modal = st.button("Open")
-    if open_modal:
-        modal.open()
-    if modal.is_open():
-        with modal.container():
-            label = '<p style = "font-family: Courier;color: blue;font-weight: bolder;font-size: medium;text-align: center;" >Are you want continue to next process ?</p>'
-            st.markdown(label, unsafe_allow_html=True)
-            # st.image(image, channels="BGR")
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                pass
-            with col2:
-                yesBtn = st.button("Yes")
-                if yesBtn:
-                    onClickYes
-            with col3:
-                noBtn = st.button("No")
-                if noBtn:
-                    modal.close()
-            with col4:
-                pass
 
 
 # Add Sidebar and Window style
@@ -672,29 +635,61 @@ if app_mode == "About":
     )
 
 
-def checkDuplicatePinAndUpdatePin(user_word, selectedPin):
+def getGestureNames():
+    with open(gestureNamesCsvPath, encoding="utf-8-sig"
+              ) as f:
+        gesture_labels = csv.reader(f)
+        gesture_labels = [row for row in gesture_labels]
+    return gesture_labels
+
+
+def getGesturePin():
+    with open(gesturePinCsvPath, encoding="utf-8-sig"
+              ) as f:
+        gesture_pin_labels = csv.reader(f)
+        gesture_pin_labels = [row for row in gesture_pin_labels]
+    return gesture_pin_labels
+
+
+def checkDuplicatePinAndUpdatePin(selectedPin, gestureName):
     isDuplicatePin = False
     with open(gesturePinCsvPath, 'r') as read:
         file = csv.reader(read, delimiter=',')
         lines = list(file)
         lines = list(filter(None, lines))
         for obj in lines:
+            if (gestureName == str(obj[0])):
+                isDuplicatePin = True
+                st.error(
+                    f'Gesture name "{gestureName}" is already entered for plug "{getPinName()}"')
+                break
             if str(selectedPin) == str(obj[1]):
                 isDuplicatePin = True
-                for pin in plugPinDict:
-                    if plugPinDict[pin] == selectedPin:
-                        pinName = pin
-                        break
                 st.error(
-                    f'"{pinName}" plug is already selected for gesture "{obj[0]}"')
+                    f'"{getPinName()}" plug is already selected for gesture "{obj[0]}"')
                 break
-    if isDuplicatePin == False:
-        with open(gesturePinCsvPath, 'a', newline="", encoding="utf-8") as append:
-            file = csv.writer(append)
-            file.writerow([user_word, selectedPin])
     return isDuplicatePin
 
 
+def logGesturesNamePinPlug():
+    with open(gesturePinCsvPath, 'a', newline="", encoding="utf-8") as append:
+        file = csv.writer(append)
+        file.writerow([user_word, selectedPin])
+    with open(gesturePlugCsvPath, 'a', newline="", encoding="utf-8") as append:
+        file = csv.writer(append)
+        file.writerow([user_word, getPinName()])
+    with open(gestureNamesCsvPath, "a", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow([user_word])
+
+
+def getPinName():
+    for pin in plugPinDict:
+        if plugPinDict[pin] == selectedPin:
+            return pin
+
+
+cancelBtnHolder = st.empty()
 if app_mode == "Set Gesture":
     global plugPinDict
     plugPinDict = firbaseService.getPlugPinDetails()
@@ -702,12 +697,13 @@ if app_mode == "Set Gesture":
     isLoggingComplete = False
     with st.form(key="Form1", clear_on_submit=False):
         with st.sidebar:
-            user_word = st.sidebar.text_input(
-                "Enter Gesture Name", disabled=state.disabled, on_change=disable
-            )
             selectedPinName = st.sidebar.selectbox(
                 "Select Plug", sortedPluPinList
             )
+            user_word = st.sidebar.text_input(
+                "Enter Gesture Name", disabled=state.disabled, on_change=disable
+            )
+
     selectedPin = plugPinDict[selectedPinName]
     if user_word in getGestureNames():
         st.error(f'{user_word} already exit')
@@ -716,15 +712,12 @@ if app_mode == "Set Gesture":
         if changeBtn:
             enable()
     else:
-        if user_word != "" and state["disabled"] and checkDuplicatePinAndUpdatePin(user_word, selectedPin) == False:
-            st.button("Cancel", on_click=enable, use_container_width=True)
+        if user_word != "" and state["disabled"] and checkDuplicatePinAndUpdatePin(selectedPin, user_word) == False:
+            cancelBtnHolder.button("Cancel", on_click=enable,
+                                   use_container_width=True, key='cancel')
             main(user_word, 1, False)
             if isLoggingComplete:
-                complete = False
-                with open(gestureNamesCsvPath, "a", newline="", encoding="utf-8") as csv_file:
-                    writer = csv.writer(csv_file)
-                    writer.writerow([user_word])
-                print(selectedPin)
+                logGesturesNamePinPlug()
                 firbaseService.addNewGesture(user_word, selectedPin)
                 user_word = ''
                 st.button("Done", on_click=enable,
@@ -739,7 +732,54 @@ if app_mode == "Video":
     enable()
     check_file = os.path.isfile(mainModelPath)
     if len(getGestureNames()) != 0 and check_file:
+        cancelBtnHolder.button("Cancel", on_click=enable,
+                               use_container_width=True, key='cancel')
         checked = st.checkbox('automation on')
         main('', 0, checked)
     else:
         st.title("No gesture found")
+
+
+def deleteGesture(gestureName, csvPath):
+    lines = []
+    with open(csvPath, 'r') as readFile:
+        reader = csv.reader(readFile)
+        for row in reader:
+            lines.append(row)
+            for field in row:
+                if field == gestureName:
+                    lines.remove(row)
+                    break
+    with open(csvPath, 'w', newline="", encoding="utf-8") as writeFile:
+        writer = csv.writer(writeFile)
+        for name in lines:
+            writer.writerow(name)
+
+
+# Video Page
+if app_mode == "Config":
+    isEmpty = False
+    with open(gesturePlugCsvPath, 'r') as csvfile:
+        csv_dict = [row for row in csvfile]
+        if len(csv_dict) == 0:
+            isEmpty = True
+    if isEmpty:
+        with open(gesturePlugCsvPath, 'a', newline="", encoding="utf-8") as append:
+            file = csv.writer(append)
+            file.writerow(['gesture', 'plug'])
+    df = pd.read_csv(gesturePlugCsvPath)
+    df = pd.DataFrame(df)
+    df.style
+    nameList = [""]
+    for name in getGestureNames():
+        for obj in name:
+            nameList.append(obj)
+    selectedGesture = st.selectbox(
+        "Select Gesture", nameList)
+    deleteBtn = st.button("Delete Gesture", use_container_width=True)
+    if selectedGesture != '' and deleteBtn:
+        deleteGesture(selectedGesture, gestureNamesCsvPath)
+        deleteGesture(selectedGesture, gesturePinCsvPath)
+        deleteGesture(selectedGesture, gesturePlugCsvPath)
+        os.remove("model/"+selectedGesture+'.pkl')
+        buildMainModel()
