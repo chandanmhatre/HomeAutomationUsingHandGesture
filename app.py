@@ -661,12 +661,12 @@ def checkDuplicatePinAndUpdatePin(selectedPin, gestureName):
             if (gestureName == str(obj[0])):
                 isDuplicatePin = True
                 st.error(
-                    f'Gesture name "{gestureName}" is already entered for plug "{getPinName()}"')
+                    f'Gesture name "{gestureName}" is already entered for plug "{getPlugName()}"')
                 break
             if str(selectedPin) == str(obj[1]):
                 isDuplicatePin = True
                 st.error(
-                    f'"{getPinName()}" plug is already selected for gesture "{obj[0]}"')
+                    f'"{getPlugName()}" plug is already selected for gesture "{obj[0]}"')
                 break
     return isDuplicatePin
 
@@ -677,13 +677,13 @@ def logGesturesNamePinPlug():
         file.writerow([user_word, selectedPin])
     with open(gesturePlugCsvPath, 'a', newline="", encoding="utf-8") as append:
         file = csv.writer(append)
-        file.writerow([user_word, getPinName()])
+        file.writerow([user_word, getPlugName()])
     with open(gestureNamesCsvPath, "a", newline="", encoding="utf-8") as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow([user_word])
 
 
-def getPinName():
+def getPlugName():
     for pin in plugPinDict:
         if plugPinDict[pin] == selectedPin:
             return pin
@@ -771,15 +771,20 @@ if app_mode == "Config":
     df = pd.DataFrame(df)
     df.style
     nameList = [""]
-    for name in getGestureNames():
-        for obj in name:
-            nameList.append(obj)
+    for name in getGesturePin():
+        nameList.append(name[0])
     selectedGesture = st.selectbox(
-        "Select Gesture", nameList)
+        "Select Gesture",  nameList)
+
     deleteBtn = st.button("Delete Gesture", use_container_width=True)
     if selectedGesture != '' and deleteBtn:
+        # for namePin in getGesturePin():
+        #     if namePin[0] == selectedGesture:
+        #         firbaseService.deleteField(namePin[1])
+        #         break
         deleteGesture(selectedGesture, gestureNamesCsvPath)
         deleteGesture(selectedGesture, gesturePinCsvPath)
         deleteGesture(selectedGesture, gesturePlugCsvPath)
+        firbaseService.deleteField(selectedGesture)
         os.remove("model/"+selectedGesture+'.pkl')
         buildMainModel()
