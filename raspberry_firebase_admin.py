@@ -1,7 +1,5 @@
 import firebase_admin
 from firebase_admin import credentials, firestore
-import threading
-from time import sleep
 
 
 if not firebase_admin._apps:

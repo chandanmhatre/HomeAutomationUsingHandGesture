@@ -756,7 +756,7 @@ def deleteGesture(gestureName, csvPath):
             writer.writerow(name)
 
 
-# Video Page
+# config Page
 if app_mode == "Config":
     isEmpty = False
     with open(gesturePlugCsvPath, 'r') as csvfile:
