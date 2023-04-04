@@ -128,8 +128,6 @@ def main(gestureName, isTraining, automationOn):
                                     firbaseService.updatePinValue(
                                         str(selectedPin), onOrOff)
                                     time.sleep(2)
-                for hand in handData:
-                    for ind in keyPoints:
                         frame = draw_landmarks(
                             frame, landmark_list)
                 st.image(frame, use_column_width=True)
@@ -572,7 +570,8 @@ def findGesture(unknownGesture, knownGestures, keyPoints, gestNames, tol):
 
 
 state = st.session_state
-st.title("Home automation using hand gesture")
+st.markdown("<h2 style='text-align: center;'>Home automation using hand gesture</h2>",
+            unsafe_allow_html=True)
 
 st.markdown(
     """
@@ -590,11 +589,10 @@ st.markdown(
 )
 
 # Create Sidebar
-st.sidebar.title("Sidebar")
-st.sidebar.subheader("Parameter")
+st.sidebar.title("Home Automation")
 
 app_mode = st.sidebar.selectbox(
-    "App Mode", ["Set Gesture", "Video", "Config", "About"])
+    "Menu", ["Set Gesture", "Video", "Config", "About"])
 if "disabled" not in state:
     state["disabled"] = False
 
@@ -719,9 +717,9 @@ if app_mode == "Set Gesture":
             if isLoggingComplete:
                 logGesturesNamePinPlug()
                 firbaseService.addNewGesture(user_word, selectedPin)
-                user_word = ''
                 st.button("Done", on_click=enable,
                           use_container_width=True)
+                user_word = ''
 
         else:
             enable()
@@ -757,7 +755,7 @@ def deleteGesture(gestureName, csvPath):
 
 
 # config Page
-if app_mode == "Config":
+if app_mode == "Config"
     isEmpty = False
     with open(gesturePlugCsvPath, 'r') as csvfile:
         csv_dict = [row for row in csvfile]
@@ -769,13 +767,20 @@ if app_mode == "Config":
             file.writerow(['gesture', 'plug'])
     df = pd.read_csv(gesturePlugCsvPath)
     df = pd.DataFrame(df)
-    df.style
+    st.markdown(
+        "<p style='text-align: center; color: orange;font-size:30px;'>---- Saved Gesture Information ----</p>", unsafe_allow_html=True)
+    st.dataframe(df.style.set_properties(**{'background-color': 'white',
+                                            'color': 'black'}), use_container_width=True)
     nameList = [""]
     for name in getGesturePin():
         nameList.append(name[0])
+    st.write("####")
+    st.write("####")
+    st.write("####")
+    st.markdown(
+        "<p style='text-align: center; color: orange;font-size:30px;'>---- Delete Gesture ----</p>", unsafe_allow_html=True)
     selectedGesture = st.selectbox(
         "Select Gesture",  nameList)
-
     deleteBtn = st.button("Delete Gesture", use_container_width=True)
     if selectedGesture != '' and deleteBtn:
         # for namePin in getGesturePin():
