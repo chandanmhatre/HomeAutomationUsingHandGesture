@@ -755,7 +755,7 @@ def deleteGesture(gestureName, csvPath):
 
 
 # config Page
-if app_mode == "Config"
+if app_mode == "Config":
     isEmpty = False
     with open(gesturePlugCsvPath, 'r') as csvfile:
         csv_dict = [row for row in csvfile]
