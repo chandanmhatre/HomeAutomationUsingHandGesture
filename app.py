@@ -95,7 +95,7 @@ def main(gestureName, isTraining, automationOn):
                 with open(newGestureSavingPath+trainModelName, 'wb') as f:
                     pickle.dump(gestNames, f)
                     pickle.dump(knownGestures, f)
-                    # logging_csv(gestNames,  knownGestures)
+                    # logging_keypoints_csv(gestNames,  knownGestures)
                 utils.buildMainModel()
                 global isLoggingComplete
                 isLoggingComplete = True
@@ -163,11 +163,11 @@ def checkIsTestingOrTraining(isTraining, knownGestures):
         return len(knownGestures) < detectionKeypointItteration
 
 
-# def logging_csv(number,  knownGestures):
+# def logging_keypoints_csv(name,  knownGestures):
 #     csv_path = 'keypoint.csv'
 #     with open(csv_path, 'a', newline="") as f:
 #         writer = csv.writer(f)
-#         writer.writerow([number, *knownGestures])
+#         writer.writerow([name, *knownGestures])
 
 
 state = st.session_state
