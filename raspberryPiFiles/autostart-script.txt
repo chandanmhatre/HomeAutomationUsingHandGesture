@@ -1,6 +1,4 @@
 sudo crontab -e
 select nono = press 1
 add command
-@reboot python3 <script path> &
-
-
+@reboot python3 <file path> &

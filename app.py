@@ -3,10 +3,12 @@ import os
 import pickle
 import time
 import cv2
-import numpy as np
 import pandas as pd
-from raspberry_firebase_admin import FirbaseServices
+from utils.landmark_servcies import landMarkServices
+from utils.raspberry_firebase_admin import FirbaseServices
 import streamlit as st
+
+from utils.utils import Utils
 
 
 class mpHands:
@@ -24,11 +26,12 @@ class mpHands:
                 results.multi_hand_landmarks, results.multi_handedness
             ):
                 global brect
-                brect = calc_bounding_rect(frame, handLandMarks)
+                brect = landMarkService.calc_bounding_rect(
+                    frame, handLandMarks)
                 global landmark_list
                 global handSide
                 handSide = handedness.classification[0].label[0:]
-                landmark_list = calc_landmark_list(
+                landmark_list = landMarkService.calc_landmark_list(
                     frame, handLandMarks)
                 myHand = []
                 for landMark in handLandMarks.landmark:
@@ -38,13 +41,14 @@ class mpHands:
         return myHands
 
 
-mainModelPath = 'MainModel/main.pkl'
-gesturePinCsvPath = 'csvData/gesture-pin.csv'
-gestureNamesCsvPath = 'csvData/gesture-names.csv'
-gesturePlugCsvPath = 'csvData/gesture-plug.csv'
-detectionKeypointLength = 10
+mainModelPath = 'dataset/MainModel/main.pkl'
+newGestureSavingPath = 'dataset/model/'
+gesturePlugPinCsvPath = 'dataset/gesture-plug-pin.csv'
+detectionKeypointItteration = 10
 firbaseService = FirbaseServices()
+landMarkService = landMarkServices()
 findHands = mpHands()
+utils = Utils()
 
 
 def main(gestureName, isTraining, automationOn):
@@ -59,7 +63,7 @@ def main(gestureName, isTraining, automationOn):
         cam.set(cv2.CAP_PROP_FPS, 30)
         cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         time.sleep(2)
-        keyPoints = [0, 4, 5, 9, 13, 17, 8, 12, 16, 20]
+        keyPoints = [0, 4, 5, 8, 9, 12, 13, 16, 17, 20]
         train = isTraining
         if train == 1:
             knownGestures = []
@@ -72,7 +76,7 @@ def main(gestureName, isTraining, automationOn):
         tol = 10
         cancelBtnHolder.empty()
         with st.empty():
-            while checkCondition(isTraining, knownGestures):
+            while checkIsTestingOrTraining(isTraining, knownGestures):
                 ret, frame = cam.read()
                 if not ret:
                     break
@@ -82,491 +86,88 @@ def main(gestureName, isTraining, automationOn):
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
                 handData = findHands.Marks(frame)
                 if train == 1:
-                    cv2.putText(
-                        frame,
-                        "Remaining : " +
-                        str(detectionKeypointLength - len(knownGestures)),
-                        (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.0,
-                        (0, 0, 0),
-                        4,
-                        cv2.LINE_AA
-                    )
-                    if handData != []:
-                        time.sleep(1)
-                        knownGesture = findDistances(handData[0])
-                        knownGestures.append(knownGesture)
-
+                    buildTrainingFrame(knownGestures, frame, handData)
                 if train == 0:
-                    if handData != []:
-                        unknownGesture = findDistances(handData[0])
-                        detectedGesture = findGesture(
-                            unknownGesture, knownGestures, keyPoints, gestNames, tol)
-                        cv2.rectangle(frame, (brect[0], brect[1]),
-                                      (brect[2], brect[1] - 30), (0, 0, 0), -1)
-                        cv2.rectangle(frame, (brect[0], brect[1]),
-                                      (brect[2], brect[3]), (0, 0, 0), 1)
-                        cv2.putText(
-                            frame,
-                            f"{handSide} : {detectedGesture}",
-                            (brect[0] + 5, brect[1] - 4),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.6,
-                            (255, 255, 255),
-                            1,
-                            cv2.LINE_AA
-                        )
-                        if automationOn:
-                            gesturepinDataList = getGesturePin()
-                            for gesture in gesturepinDataList:
-                                serverOnOff = firbaseService.getGesturePinDetails()
-                                if gesture[0] == detectedGesture:
-                                    selectedPin = gesture[1]
-                                    onOrOff = True if serverOnOff[str(
-                                        selectedPin)] == False else False
-                                    firbaseService.updatePinValue(
-                                        str(selectedPin), onOrOff)
-                                    time.sleep(2)
-                        frame = draw_landmarks(
-                            frame, landmark_list)
+                    frame = buildTestingFrame(
+                        automationOn, keyPoints, knownGestures, gestNames, tol, frame, handData)
                 st.image(frame, use_column_width=True)
             if train == 1:
-                with open('model/'+trainModelName, 'wb') as f:
+                with open(newGestureSavingPath+trainModelName, 'wb') as f:
                     pickle.dump(gestNames, f)
                     pickle.dump(knownGestures, f)
-                buildMainModel()
+                    # logging_csv(gestNames,  knownGestures)
+                utils.buildMainModel()
                 global isLoggingComplete
                 isLoggingComplete = True
 
 
-def checkCondition(isTraining, knownGestures):
+def buildTrainingFrame(knownGestures, frame, handData):
+    cv2.putText(
+        frame,
+        "Remaining : " +
+        str(detectionKeypointItteration - len(knownGestures)),
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        (0, 0, 0),
+        4,
+        cv2.LINE_AA
+    )
+    if handData != []:
+        time.sleep(1)
+        knownGesture = utils.findDistances(handData[0])
+        knownGestures.append(knownGesture)
+
+
+def buildTestingFrame(automationOn, keyPoints, knownGestures, gestNames, tol, frame, handData):
+    if handData != []:
+        unknownGesture = utils.findDistances(handData[0])
+        detectedGesture = utils.findGesture(
+            unknownGesture, knownGestures, keyPoints, gestNames, tol)
+        cv2.rectangle(frame, (brect[0], brect[1]),
+                      (brect[2], brect[1] - 30), (0, 0, 0), -1)
+        cv2.rectangle(frame, (brect[0], brect[1]),
+                      (brect[2], brect[3]), (0, 0, 0), 1)
+        cv2.putText(
+            frame,
+            f"{handSide} : {detectedGesture}",
+            (brect[0] + 5, brect[1] - 4),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA
+        )
+        if automationOn:
+            gesturepinDataList = getGesturePlugPin()
+            for gesturePin in gesturepinDataList:
+                # gesture = 0, plug = 1, pin = 2
+                serverOnOff = firbaseService.getGesturePinDetails()
+                if gesturePin[0] == detectedGesture:
+                    selectedPin = gesturePin[2]
+                    onOrOff = True if serverOnOff[str(
+                        selectedPin)] == False else False
+                    firbaseService.updatePinValue(
+                        str(selectedPin), onOrOff)
+                    time.sleep(2)
+        frame = landMarkService.draw_landmarks(
+            frame, landmark_list)
+
+    return frame
+
+
+def checkIsTestingOrTraining(isTraining, knownGestures):
     if (isTraining == 0):
         return True
     else:
-        return len(knownGestures) < detectionKeypointLength
+        return len(knownGestures) < detectionKeypointItteration
 
 
-def buildMainModel():
-    newGestNames = []
-    newKnownGestures = []
-    for d in os.listdir("model/"):
-        if d.endswith('.pkl'):
-            with open("model/"+d, 'rb') as f:
-                gestNames2 = pickle.load(f)
-                knownGestures2 = pickle.load(f)
-                for data in gestNames2:
-                    newGestNames.append(data)
-                for data in knownGestures2:
-                    newKnownGestures.append(data)
-    with open(mainModelPath, 'wb') as out:
-        pickle.dump(
-            newGestNames, out, protocol=pickle.HIGHEST_PROTOCOL)
-        pickle.dump(
-            newKnownGestures, out, protocol=pickle.HIGHEST_PROTOCOL)
-
-
-def calc_bounding_rect(image, landmarks):
-    image_width, image_height = image.shape[1], image.shape[0]
-
-    landmark_array = np.empty((0, 2), int)
-
-    for _, landmark in enumerate(landmarks.landmark):
-        landmark_x = min(int(landmark.x * image_width), image_width - 1)
-        landmark_y = min(int(landmark.y * image_height), image_height - 1)
-
-        landmark_point = [np.array((landmark_x, landmark_y))]
-
-        landmark_array = np.append(landmark_array, landmark_point, axis=0)
-
-    x, y, w, h = cv2.boundingRect(landmark_array)
-
-    return [x, y, x + w, y + h]
-
-
-def calc_landmark_list(image, landmarks):
-    image_width, image_height = image.shape[1], image.shape[0]
-
-    landmark_point = []
-
-    # Keypoint
-    for _, landmark in enumerate(landmarks.landmark):
-        landmark_x = min(int(landmark.x * image_width), image_width - 1)
-        landmark_y = min(int(landmark.y * image_height), image_height - 1)
-        # landmark_z = landmark.z
-
-        landmark_point.append([landmark_x, landmark_y])
-
-    return landmark_point
-
-
-def draw_landmarks(image, landmark_point):
-    if len(landmark_point) > 0:
-        # Thumb
-        cv2.line(image, tuple(landmark_point[2]), tuple(
-            landmark_point[3]), (0, 0, 0), 6)
-        cv2.line(
-            image,
-            tuple(landmark_point[2]),
-            tuple(landmark_point[3]),
-            (255, 255, 255),
-            2,
-        )
-        cv2.line(image, tuple(landmark_point[3]), tuple(
-            landmark_point[4]), (0, 0, 0), 6)
-        cv2.line(
-            image,
-            tuple(landmark_point[3]),
-            tuple(landmark_point[4]),
-            (255, 255, 255),
-            2,
-        )
-
-        # Index finger
-        cv2.line(image, tuple(landmark_point[5]), tuple(
-            landmark_point[6]), (0, 0, 0), 6)
-        cv2.line(
-            image,
-            tuple(landmark_point[5]),
-            tuple(landmark_point[6]),
-            (255, 255, 255),
-            2,
-        )
-        cv2.line(image, tuple(landmark_point[6]), tuple(
-            landmark_point[7]), (0, 0, 0), 6)
-        cv2.line(
-            image,
-            tuple(landmark_point[6]),
-            tuple(landmark_point[7]),
-            (255, 255, 255),
-            2,
-        )
-        cv2.line(image, tuple(landmark_point[7]), tuple(
-            landmark_point[8]), (0, 0, 0), 6)
-        cv2.line(
-            image,
-            tuple(landmark_point[7]),
-            tuple(landmark_point[8]),
-            (255, 255, 255),
-            2,
-        )
-
-        # Middle finger
-        cv2.line(
-            image, tuple(landmark_point[9]), tuple(
-                landmark_point[10]), (0, 0, 0), 6
-        )
-        cv2.line(
-            image,
-            tuple(landmark_point[9]),
-            tuple(landmark_point[10]),
-            (255, 255, 255),
-            2,
-        )
-        cv2.line(
-            image, tuple(landmark_point[10]), tuple(
-                landmark_point[11]), (0, 0, 0), 6
-        )
-        cv2.line(
-            image,
-            tuple(landmark_point[10]),
-            tuple(landmark_point[11]),
-            (255, 255, 255),
-            2,
-        )
-        cv2.line(
-            image, tuple(landmark_point[11]), tuple(
-                landmark_point[12]), (0, 0, 0), 6
-        )
-        cv2.line(
-            image,
-            tuple(landmark_point[11]),
-            tuple(landmark_point[12]),
-            (255, 255, 255),
-            2,
-        )
-
-        # Ring finger
-        cv2.line(
-            image, tuple(landmark_point[13]), tuple(
-                landmark_point[14]), (0, 0, 0), 6
-        )
-        cv2.line(
-            image,
-            tuple(landmark_point[13]),
-            tuple(landmark_point[14]),
-            (255, 255, 255),
-            2,
-        )
-        cv2.line(
-            image, tuple(landmark_point[14]), tuple(
-                landmark_point[15]), (0, 0, 0), 6
-        )
-        cv2.line(
-            image,
-            tuple(landmark_point[14]),
-            tuple(landmark_point[15]),
-            (255, 255, 255),
-            2,
-        )
-        cv2.line(
-            image, tuple(landmark_point[15]), tuple(
-                landmark_point[16]), (0, 0, 0), 6
-        )
-        cv2.line(
-            image,
-            tuple(landmark_point[15]),
-            tuple(landmark_point[16]),
-            (255, 255, 255),
-            2,
-        )
-
-        # Little finger
-        cv2.line(
-            image, tuple(landmark_point[17]), tuple(
-                landmark_point[18]), (0, 0, 0), 6
-        )
-        cv2.line(
-            image,
-            tuple(landmark_point[17]),
-            tuple(landmark_point[18]),
-            (255, 255, 255),
-            2,
-        )
-        cv2.line(
-            image, tuple(landmark_point[18]), tuple(
-                landmark_point[19]), (0, 0, 0), 6
-        )
-        cv2.line(
-            image,
-            tuple(landmark_point[18]),
-            tuple(landmark_point[19]),
-            (255, 255, 255),
-            2,
-        )
-        cv2.line(
-            image, tuple(landmark_point[19]), tuple(
-                landmark_point[20]), (0, 0, 0), 6
-        )
-        cv2.line(
-            image,
-            tuple(landmark_point[19]),
-            tuple(landmark_point[20]),
-            (255, 255, 255),
-            2,
-        )
-
-        # Palm
-        cv2.line(image, tuple(landmark_point[0]), tuple(
-            landmark_point[1]), (0, 0, 0), 6)
-        cv2.line(
-            image,
-            tuple(landmark_point[0]),
-            tuple(landmark_point[1]),
-            (255, 255, 255),
-            2,
-        )
-        cv2.line(image, tuple(landmark_point[1]), tuple(
-            landmark_point[2]), (0, 0, 0), 6)
-        cv2.line(
-            image,
-            tuple(landmark_point[1]),
-            tuple(landmark_point[2]),
-            (255, 255, 255),
-            2,
-        )
-        cv2.line(image, tuple(landmark_point[2]), tuple(
-            landmark_point[5]), (0, 0, 0), 6)
-        cv2.line(
-            image,
-            tuple(landmark_point[2]),
-            tuple(landmark_point[5]),
-            (255, 255, 255),
-            2,
-        )
-        cv2.line(image, tuple(landmark_point[5]), tuple(
-            landmark_point[9]), (0, 0, 0), 6)
-        cv2.line(
-            image,
-            tuple(landmark_point[5]),
-            tuple(landmark_point[9]),
-            (255, 255, 255),
-            2,
-        )
-        cv2.line(
-            image, tuple(landmark_point[9]), tuple(
-                landmark_point[13]), (0, 0, 0), 6
-        )
-        cv2.line(
-            image,
-            tuple(landmark_point[9]),
-            tuple(landmark_point[13]),
-            (255, 255, 255),
-            2,
-        )
-        cv2.line(
-            image, tuple(landmark_point[13]), tuple(
-                landmark_point[17]), (0, 0, 0), 6
-        )
-        cv2.line(
-            image,
-            tuple(landmark_point[13]),
-            tuple(landmark_point[17]),
-            (255, 255, 255),
-            2,
-        )
-        cv2.line(
-            image, tuple(landmark_point[17]), tuple(
-                landmark_point[0]), (0, 0, 0), 6
-        )
-        cv2.line(
-            image,
-            tuple(landmark_point[17]),
-            tuple(landmark_point[0]),
-            (255, 255, 255),
-            2,
-        )
-
-    # Key Points
-    for index, landmark in enumerate(landmark_point):
-        if index == 0:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 1:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 2:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 3:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 4:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       8, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 8, (0, 0, 0), 1)
-        if index == 5:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 6:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 7:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 8:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       8, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 8, (0, 0, 0), 1)
-        if index == 9:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 10:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 11:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 12:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       8, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 8, (0, 0, 0), 1)
-        if index == 13:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 14:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 15:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 16:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       8, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 8, (0, 0, 0), 1)
-        if index == 17:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 18:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 19:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       5, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 20:
-            cv2.circle(image, (landmark[0], landmark[1]),
-                       8, (255, 255, 255), -1)
-            cv2.circle(image, (landmark[0], landmark[1]), 8, (0, 0, 0), 1)
-
-    return image
-
-
-def findDistances(handData):
-    distMatrix = np.zeros([len(handData), len(handData)], dtype='float')
-    palmSize = ((handData[0][0]-handData[9][0])**2 +
-                (handData[0][1]-handData[9][1])**2)**(1./2.)
-    for row in range(0, len(handData)):
-        for column in range(0, len(handData)):
-            distMatrix[row][column] = (((handData[row][0]-handData[column][0])**2+(
-                handData[row][1]-handData[column][1])**2)**(1./2.))/palmSize
-    return distMatrix
-
-
-def findError(gestureMatrix, unknownMatrix, keyPoints):
-    error = 0
-    for row in keyPoints:
-        for column in keyPoints:
-            error = error+abs(gestureMatrix[row]
-                              [column]-unknownMatrix[row][column])
-    return error
-
-
-def split(a, n):
-    k, m = divmod(len(a), n)
-    return (a[i*k+min(i, m):(i+1)*k+min(i+1, m)] for i in range(n))
-
-
-def findGesture(unknownGesture, knownGestures, keyPoints, gestNames, tol):
-    errorArray = []
-    for i in range(0, len(gestNames) * detectionKeypointLength, 1):
-        error = findError(knownGestures[i], unknownGesture, keyPoints)
-        errorArray.append(error)
-    errorMin = errorArray[0]
-    for i in range(0, len(errorArray), 1):
-        if errorArray[i] < errorMin:
-            errorMin = errorArray[i]
-    minIndex = 0
-    errorSplitList = list(split(errorArray, len(gestNames)))
-    for i in range(0, len(errorSplitList), 1):
-        if errorMin in errorSplitList[i]:
-            minIndex = i
-    if errorMin < tol:
-        gesture = gestNames[minIndex]
-        # print('++++++++++++++++++++++++++++')
-        # print(errorMin)
-        # print('--------------------')
-        # print(tol)
-        # print('--------------------')
-        # print(gesture)
-    if errorMin >= tol:
-        gesture = 'Unknown'
-    return gesture
+# def logging_csv(number,  knownGestures):
+#     csv_path = 'keypoint.csv'
+#     with open(csv_path, 'a', newline="") as f:
+#         writer = csv.writer(f)
+#         writer.writerow([number, *knownGestures])
 
 
 state = st.session_state
@@ -592,7 +193,7 @@ st.markdown(
 st.sidebar.title("Home Automation")
 
 app_mode = st.sidebar.selectbox(
-    "Menu", ["Set Gesture", "Video", "Config", "About"])
+    "Menu", ["Set Gesture", "View/Automate", "Config", "About"])
 if "disabled" not in state:
     state["disabled"] = False
 
@@ -621,28 +222,25 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# About Page
-if app_mode == "About":
-    enable()
-    state["disabled"] = False
-    st.markdown(
-        """
-                ## ABOUT\n
-                In this application we are using **MediaPipe** for a hand gesture detection. **StreamLit** is used to create the Web Graphical User Interface (GUI) \n
-    """
-    )
-
 
 def getGestureNames():
-    with open(gestureNamesCsvPath, encoding="utf-8-sig"
+    with open(gesturePlugPinCsvPath, encoding="utf-8-sig"
               ) as f:
         gesture_labels = csv.reader(f)
-        gesture_labels = [row for row in gesture_labels]
+        gesture_labels = [row[0] for row in gesture_labels]
     return gesture_labels
 
 
 def getGesturePin():
-    with open(gesturePinCsvPath, encoding="utf-8-sig"
+    with open(gesturePlugPinCsvPath, encoding="utf-8-sig"
+              ) as f:
+        gesture_pin_labels = csv.reader(f)
+        gesture_pin_labels = [row[2] for row in gesture_pin_labels]
+    return gesture_pin_labels
+
+
+def getGesturePlugPin():
+    with open(gesturePlugPinCsvPath, encoding="utf-8-sig"
               ) as f:
         gesture_pin_labels = csv.reader(f)
         gesture_pin_labels = [row for row in gesture_pin_labels]
@@ -651,7 +249,7 @@ def getGesturePin():
 
 def checkDuplicatePinAndUpdatePin(selectedPin, gestureName):
     isDuplicatePin = False
-    with open(gesturePinCsvPath, 'r') as read:
+    with open(gesturePlugPinCsvPath, 'r') as read:
         file = csv.reader(read, delimiter=',')
         lines = list(file)
         lines = list(filter(None, lines))
@@ -659,34 +257,29 @@ def checkDuplicatePinAndUpdatePin(selectedPin, gestureName):
             if (gestureName == str(obj[0])):
                 isDuplicatePin = True
                 st.error(
-                    f'Gesture name "{gestureName}" is already entered for plug "{getPlugName()}"')
+                    f'Gesture name "{gestureName}" is already entered for plug "{getPlugNameUsingPin()}"')
                 break
-            if str(selectedPin) == str(obj[1]):
+            if str(selectedPin) == str(obj[2]):
                 isDuplicatePin = True
                 st.error(
-                    f'"{getPlugName()}" plug is already selected for gesture "{obj[0]}"')
+                    f'"{getPlugNameUsingPin()}" plug is already selected for gesture "{obj[0]}"')
                 break
     return isDuplicatePin
 
 
-def logGesturesNamePinPlug():
-    with open(gesturePinCsvPath, 'a', newline="", encoding="utf-8") as append:
-        file = csv.writer(append)
-        file.writerow([user_word, selectedPin])
-    with open(gesturePlugCsvPath, 'a', newline="", encoding="utf-8") as append:
-        file = csv.writer(append)
-        file.writerow([user_word, getPlugName()])
-    with open(gestureNamesCsvPath, "a", newline="", encoding="utf-8") as csv_file:
-        writer = csv.writer(csv_file)
-        writer.writerow([user_word])
-
-
-def getPlugName():
+def getPlugNameUsingPin():
     for pin in plugPinDict:
         if plugPinDict[pin] == selectedPin:
             return pin
 
 
+def logGesturesNamePinPlug():
+    with open(gesturePlugPinCsvPath, 'a', newline="", encoding="utf-8") as append:
+        file = csv.writer(append)
+        file.writerow([user_word, getPlugNameUsingPin(), selectedPin])
+
+
+# set gesture page
 cancelBtnHolder = st.empty()
 if app_mode == "Set Gesture":
     global plugPinDict
@@ -726,7 +319,7 @@ if app_mode == "Set Gesture":
 
 
 # Video Page
-if app_mode == "Video":
+if app_mode == "View/Automate":
     enable()
     check_file = os.path.isfile(mainModelPath)
     if len(getGestureNames()) != 0 and check_file:
@@ -757,23 +350,17 @@ def deleteGesture(gestureName, csvPath):
 # config Page
 if app_mode == "Config":
     isEmpty = False
-    with open(gesturePlugCsvPath, 'r') as csvfile:
-        csv_dict = [row for row in csvfile]
-        if len(csv_dict) == 0:
-            isEmpty = True
-    if isEmpty:
-        with open(gesturePlugCsvPath, 'a', newline="", encoding="utf-8") as append:
-            file = csv.writer(append)
-            file.writerow(['gesture', 'plug'])
-    df = pd.read_csv(gesturePlugCsvPath)
-    df = pd.DataFrame(df)
+    df = pd.read_csv(gesturePlugPinCsvPath, sep=',',
+                     names=["Gesture", "Plug", 'Pin'])
+    df = pd.DataFrame(df, columns=["Gesture", "Plug", 'Pin'])
+    df.drop(df.iloc[:, 2:], inplace=True, axis=1)
     st.markdown(
         "<p style='text-align: center; color: orange;font-size:30px;'>---- Saved Gesture Information ----</p>", unsafe_allow_html=True)
     st.dataframe(df.style.set_properties(**{'background-color': 'white',
                                             'color': 'black'}), use_container_width=True)
     nameList = [""]
-    for name in getGesturePin():
-        nameList.append(name[0])
+    for name in getGestureNames():
+        nameList.append(name)
     st.write("####")
     st.write("####")
     st.write("####")
@@ -783,13 +370,19 @@ if app_mode == "Config":
         "Select Gesture",  nameList)
     deleteBtn = st.button("Delete Gesture", use_container_width=True)
     if selectedGesture != '' and deleteBtn:
-        # for namePin in getGesturePin():
-        #     if namePin[0] == selectedGesture:
-        #         firbaseService.deleteField(namePin[1])
-        #         break
-        deleteGesture(selectedGesture, gestureNamesCsvPath)
-        deleteGesture(selectedGesture, gesturePinCsvPath)
-        deleteGesture(selectedGesture, gesturePlugCsvPath)
+        deleteGesture(selectedGesture, gesturePlugPinCsvPath)
         firbaseService.deleteField(selectedGesture)
-        os.remove("model/"+selectedGesture+'.pkl')
-        buildMainModel()
+        os.remove(newGestureSavingPath+selectedGesture+'.pkl')
+        utils.buildMainModel()
+
+
+# About Page
+if app_mode == "About":
+    enable()
+    state["disabled"] = False
+    st.markdown(
+        """
+                ## ABOUT\n
+                In this application we are using **MediaPipe** for a hand gesture detection. **StreamLit** is used to create the Web Graphical User Interface (GUI) \n
+    """
+    )
