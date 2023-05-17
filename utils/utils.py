@@ -48,6 +48,7 @@ class Utils(object):
                 knownGestures[i], unknownGesture, keyPoints)
             errorArray.append(error)
         errorMin = errorArray[0]
+        # print(errorArray)
         for i in range(0, len(errorArray), 1):
             if errorArray[i] < errorMin:
                 errorMin = errorArray[i]  # lowest value is correct gesture
